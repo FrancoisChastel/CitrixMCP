@@ -42,12 +42,19 @@ Full run: `node scripts/test-all.mjs` → 10 passed, 0 failed, 2 skipped.
 - [x] Clipboard restore active during tests (RDT_RESTORE_CLIPBOARD=true)
 - [ ] Register the MCP server in the user's Claude client and use tools in-session
 
-## Packaging & CI
+## Packaging, CI & release
 - [x] `npx`-style launch, no global install (`npx -y github:.../CitrixMCP`)
       via `prepare` auto-build + `files` + `bin` (rdt-mcp / citrix-mcp)
 - [x] `npm test` = build + relay self-test + builder unit tests
 - [x] Builder unit tests for the GUI tools (`scripts/test-builders.mjs`)
 - [x] GitHub Actions CI: build + self-tests + tools/list smoke (`.github/workflows/ci.yml`)
+- [x] Registered at **user scope** — `claude mcp add citrix -s user` → all sessions,
+      absolute node path, survives Claude restarts + Citrix reconnect. ✔ Connected.
+- [x] GitHub repo description + topics set (mcp, citrix, powershell, …)
+- [x] MIT LICENSE + npm metadata (license/author/repository/keywords)
+- [x] Open-source README: badges, Mermaid architecture + sequence diagrams
+      (both validated), demo GIF (`docs/demo.gif`), 3-step onboarding
+- [x] Pushed to origin/main; CI runs on push
 
 ## Nice-to-have / later
 - [ ] Optional progress logging for large transfers
