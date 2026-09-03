@@ -3,3 +3,9 @@ dist/
 *.log
 .DS_Store
 .env
+
+# test artifacts
+rdt_screenshot.png
+rdt_notepad.png
+rdt_download.txt
+*.local.*

@@ -130,12 +130,21 @@ user, and PowerShell version. Then try `rdt_run` with `Get-Location`.
 | Tool | What it does |
 |------|--------------|
 | `rdt_ping` | Confirm the helper is alive; returns host/user/PowerShell version. |
-| `rdt_run` | Run a PowerShell command/script in the **persistent** session (cwd, variables, modules persist). The universal tool. |
+| `rdt_run` | Run a PowerShell command/script in the session and return output. Working directory persists between calls. The universal tool. |
 | `rdt_launch` | `Start-Process` a program (`powershell.exe`, `notepad.exe`, a path, a document); returns PID. |
-| `rdt_send_keys` | Send keystrokes (.NET SendKeys syntax) to the session, optionally activating a window by title first. |
+| `rdt_list_windows` | List visible top-level windows as JSON `[{pid, process, title}]`. |
+| `rdt_focus` | Bring a window to the foreground by PID or title substring. |
+| `rdt_send_keys` | Send keystrokes (.NET SendKeys syntax, e.g. `^c`, `{F5}`) to the session, optionally activating a window first. |
+| `rdt_type` | Type arbitrary literal text (special chars auto-escaped; newlines press Enter). |
+| `rdt_mouse` | Move the cursor to `(x, y)` and optionally click (left/right/middle, click/double). |
 | `rdt_screenshot` | Capture the remote desktop as PNG and return it as an image (optionally save locally). |
+| `rdt_processes` | List top processes by memory as JSON `[{pid, name, ws_mb, cpu}]`. |
 | `rdt_upload` | Send a local file or inline text into a file on the Windows box (binary-safe, chunked). |
 | `rdt_download` | Pull a file off the Windows box to a local path (binary-safe, chunked). |
+
+A typical GUI-driving loop: `rdt_screenshot` to see the desktop → `rdt_list_windows`
+/ `rdt_focus` to target a window → `rdt_mouse` / `rdt_type` / `rdt_send_keys` to
+act → `rdt_screenshot` again to confirm.
 
 ## Configuration
 
@@ -167,18 +176,42 @@ The helper takes matching flags: `-PollMs`, `-ChunkBytes`, `-DefaultTimeoutMs`,
 - Use **Windows PowerShell 5.1** (`powershell.exe`), which is STA by default —
   required for clipboard and screenshot APIs.
 
-## Development
+## Testing
+
+### Offline (no Windows / no Citrix)
 
 ```bash
 npm run build                    # compile TS -> dist/
-npm run selftest                 # loopback protocol test (Mac relay), no Windows
-python3 scripts/selftest_py.py   # Python responder test, no Windows
+npm run selftest                 # loopback protocol test (Mac relay)
+python3 scripts/selftest_py.py   # Python responder test
 ```
 
-The TS self-test runs the real Mac-side relay against an in-process port of the
-Windows responder over an in-memory clipboard, exercising ping / exec / upload /
+These run the real Mac-side relay against an in-process port of the Windows
+responder over an in-memory clipboard, exercising ping / exec / upload /
 download / screenshot with a tiny chunk size so the multi-frame paths run. The
-Python test drives `windows/rdt_agent.py` the same way. The two codecs are
-verified byte-identical, so either helper interoperates with the server.
+TS and Python frame codecs are verified byte-identical, so either helper
+interoperates with the server.
+
+### Live (against the running helper)
+
+With the helper running in the Citrix session and the clipboard synced, this
+launches the built server as a real MCP client would and exercises **every
+tool** end-to-end:
+
+```bash
+node scripts/test-all.mjs                 # safe: never sends input to the desktop
+node scripts/test-all.mjs --interactive   # also tests keyboard input via Notepad
+node scripts/test-all.mjs --shot-dir DIR  # where to save the screenshot PNG
+```
+
+Safe mode covers ping, run, list-windows, processes, launch, upload+download
+round-trip, screenshot, mouse-move, and focus. The `--interactive` run adds the
+keyboard tools (`rdt_type`, `rdt_send_keys`) by launching Notepad, typing into
+it, and closing it without saving — it is opt-in because it sends real
+keystrokes into the live session.
+
+There are also two focused live probes: `node scripts/ping-client.mjs` (ping +
+one command) and `node scripts/transfer-test.mjs` (700 KB binary round-trip with
+a Windows-side hash check).
 
 See `TODO.md` for status and remaining verification against the live session.

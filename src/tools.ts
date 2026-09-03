@@ -11,7 +11,15 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Relay, ExecResult } from "./relay.js";
 import { config } from "./config.js";
-import { buildLaunch, buildSendKeys } from "./psbuilders.js";
+import {
+  buildFocus,
+  buildLaunch,
+  buildListWindows,
+  buildMouse,
+  buildProcesses,
+  buildSendKeys,
+  escapeSendKeys,
+} from "./psbuilders.js";
 import { log } from "./util.js";
 
 type TextResult = {
@@ -244,6 +252,99 @@ export function registerTools(server: McpServer, relay: Relay): void {
         const abs = resolve(localPath);
         await writeFile(abs, data);
         return text(`Downloaded ${data.length} bytes from ${remotePath} to ${abs}`);
+      }),
+  );
+
+  server.registerTool(
+    "rdt_list_windows",
+    {
+      title: "List open windows",
+      description:
+        "List the visible top-level windows in the Windows session as JSON [{pid, process, title}]. Use this to find a window to focus, type into, or screenshot.",
+      inputSchema: {},
+    },
+    async () =>
+      guarded(async () => {
+        const res = await relay.exec(buildListWindows(), 20_000);
+        return text(res.output.trim() || "[]");
+      }),
+  );
+
+  server.registerTool(
+    "rdt_focus",
+    {
+      title: "Focus a window",
+      description:
+        "Bring a window to the foreground by PID (preferred) or by a leading substring of its title. Pair with rdt_list_windows, then rdt_send_keys / rdt_type.",
+      inputSchema: {
+        pid: z.number().int().positive().optional().describe("Process id of the window to activate."),
+        title: z.string().optional().describe("Leading substring of the window title to activate."),
+      },
+    },
+    async ({ pid, title }) =>
+      guarded(async () => {
+        if (pid === undefined && (title === undefined || title === "")) {
+          return text("Error: provide pid or title.", true);
+        }
+        const res = await relay.exec(buildFocus({ pid, title }), 15_000);
+        return text(res.output.trim());
+      }),
+  );
+
+  server.registerTool(
+    "rdt_type",
+    {
+      title: "Type literal text",
+      description:
+        "Type arbitrary literal text into the Windows session (special characters are auto-escaped; newlines press Enter). Optionally activate a window by title first. For key combos like Ctrl+C use rdt_send_keys instead.",
+      inputSchema: {
+        text: z.string().min(1).describe("Literal text to type."),
+        windowTitle: z.string().optional().describe("If set, activate this window before typing."),
+        delayMs: z.number().int().nonnegative().optional().describe("Pause after activating (default 300ms)."),
+      },
+    },
+    async ({ text: body, windowTitle, delayMs }) =>
+      guarded(async () => {
+        const cmd = buildSendKeys({ keys: escapeSendKeys(body), windowTitle, delayMs });
+        const res = await relay.exec(cmd, 30_000);
+        return text(res.output.trim());
+      }),
+  );
+
+  server.registerTool(
+    "rdt_mouse",
+    {
+      title: "Move/click the mouse",
+      description:
+        "Move the cursor to (x, y) in the Windows session and optionally click. Combine with rdt_screenshot to see coordinates first. Buttons: left/right/middle. Actions: move/click/double.",
+      inputSchema: {
+        x: z.number().int().describe("Screen X coordinate."),
+        y: z.number().int().describe("Screen Y coordinate."),
+        button: z.enum(["left", "right", "middle"]).optional().describe("Mouse button (default left)."),
+        action: z.enum(["move", "click", "double"]).optional().describe("What to do (default click)."),
+      },
+    },
+    async ({ x, y, button, action }) =>
+      guarded(async () => {
+        const res = await relay.exec(buildMouse({ x, y, button, action }), 15_000);
+        return text(res.output.trim() || "ok");
+      }),
+  );
+
+  server.registerTool(
+    "rdt_processes",
+    {
+      title: "List processes",
+      description:
+        "List the top processes by memory in the Windows session as JSON [{pid, name, ws_mb, cpu}].",
+      inputSchema: {
+        top: z.number().int().positive().optional().describe("How many to return (default 20, max 200)."),
+      },
+    },
+    async ({ top }) =>
+      guarded(async () => {
+        const res = await relay.exec(buildProcesses(top ?? 20), 20_000);
+        return text(res.output.trim() || "[]");
       }),
   );
 }
