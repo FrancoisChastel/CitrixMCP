@@ -5,13 +5,24 @@
   "type": "module",
   "description": "MCP server that drives a PowerShell session inside a Citrix/RDP window over the synced clipboard.",
   "bin": {
-    "rdt-mcp": "dist/index.js"
+    "rdt-mcp": "dist/index.js",
+    "citrix-mcp": "dist/index.js"
   },
+  "files": [
+    "dist",
+    "windows",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "prepare": "npm run build",
     "start": "node dist/index.js",
-    "dev": "node --experimental-strip-types --no-warnings src/index.ts",
+    "dev": "npm run build && node dist/index.js",
     "selftest": "node --experimental-strip-types --no-warnings scripts/selftest.ts",
+    "selftest:py": "python3 scripts/selftest_py.py",
+    "test:builders": "node scripts/test-builders.mjs",
+    "test": "npm run build && npm run selftest && npm run test:builders",
+    "test:live": "node scripts/test-all.mjs",
     "clean": "rm -rf dist"
   },
   "dependencies": {

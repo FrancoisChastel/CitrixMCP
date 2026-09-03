@@ -4,8 +4,13 @@ dist/
 .DS_Store
 .env
 
+# python
+__pycache__/
+*.pyc
+
 # test artifacts
 rdt_screenshot.png
 rdt_notepad.png
 rdt_download.txt
 *.local.*
+*.tgz

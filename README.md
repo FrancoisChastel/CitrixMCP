@@ -49,19 +49,21 @@ runs on a sensitive machine:
 
 ## Setup
 
-### 1. Build the server (on the Mac)
+### 1. Register it with your MCP client
+
+**Easiest — no install, straight from the repo** (npm clones and builds it for
+you; `prepare` compiles the TypeScript automatically):
 
 ```bash
-npm install
-npm run build
+claude mcp add citrix -- npx -y github:FrancoisChastel/CitrixMCP
 ```
 
-### 2. Register it with your MCP client
-
-**Claude Code:**
+**From a local clone:**
 
 ```bash
-claude mcp add citrix -- node /ABSOLUTE/PATH/TO/CitrixMCP/dist/index.js
+git clone git@github.com:FrancoisChastel/CitrixMCP.git && cd CitrixMCP
+npm install          # installs deps and builds dist/ via the prepare script
+claude mcp add citrix -- node "$PWD/dist/index.js"
 ```
 
 **Claude Desktop** (`claude_desktop_config.json`) or any MCP client:
@@ -70,14 +72,17 @@ claude mcp add citrix -- node /ABSOLUTE/PATH/TO/CitrixMCP/dist/index.js
 {
   "mcpServers": {
     "citrix": {
-      "command": "node",
-      "args": ["/ABSOLUTE/PATH/TO/CitrixMCP/dist/index.js"]
+      "command": "npx",
+      "args": ["-y", "github:FrancoisChastel/CitrixMCP"]
     }
   }
 }
 ```
 
-### 3. Start the helper (inside the Citrix/RDP Windows session)
+Optional environment overrides (see the Configuration table) go in an `env`
+block, e.g. `"env": { "RDT_CHUNK_BYTES": "524288" }`.
+
+### 2. Start the helper (inside the Citrix/RDP Windows session)
 
 There are two interchangeable helpers — both speak the identical clipboard
 protocol, so the Mac server works with either. Pick whichever your locked-down
@@ -120,7 +125,7 @@ python rdt_agent.py             # real run
 
 Leave whichever helper you chose running. Stop it anytime with **Ctrl+C**.
 
-### 4. Verify
+### 3. Verify
 
 From the MCP client, call `rdt_ping`. You should get back the remote host name,
 user, and PowerShell version. Then try `rdt_run` with `Get-Location`.

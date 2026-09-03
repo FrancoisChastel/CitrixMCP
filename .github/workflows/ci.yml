@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Relay protocol self-test (TypeScript)
+        run: npm run selftest
+
+      - name: PowerShell command builder unit tests
+        run: npm run test:builders
+
+      - name: MCP tools/list smoke test
+        run: |
+          {
+            printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}'
+            printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+            printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
+            sleep 1
+          } | node dist/index.js 2>/dev/null | grep -q '"rdt_ping"' && echo "tools advertised OK"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Python responder self-test
+        run: python3 scripts/selftest_py.py
+
+# Note: the live end-to-end test (scripts/test-all.mjs) needs a running Windows
+# helper reachable over a Citrix-synced clipboard and cannot run in CI. The
+# builder unit tests above cover the GUI tools' command generation instead.

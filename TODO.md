@@ -42,11 +42,17 @@ Full run: `node scripts/test-all.mjs` → 10 passed, 0 failed, 2 skipped.
 - [x] Clipboard restore active during tests (RDT_RESTORE_CLIPBOARD=true)
 - [ ] Register the MCP server in the user's Claude client and use tools in-session
 
+## Packaging & CI
+- [x] `npx`-style launch, no global install (`npx -y github:.../CitrixMCP`)
+      via `prepare` auto-build + `files` + `bin` (rdt-mcp / citrix-mcp)
+- [x] `npm test` = build + relay self-test + builder unit tests
+- [x] Builder unit tests for the GUI tools (`scripts/test-builders.mjs`)
+- [x] GitHub Actions CI: build + self-tests + tools/list smoke (`.github/workflows/ci.yml`)
+
 ## Nice-to-have / later
 - [ ] Optional progress logging for large transfers
 - [ ] Retry/backoff tuning + metrics on retransmits
-- [ ] Packaging: `npx` invocation without global install
-- [ ] Unit tests for psbuilders escaping + protocol codec
+- [ ] Publish to npm registry (currently git-install only)
 
 ## Notes / decisions
 - Transport is clipboard-only (Citrix double-hop; no SSH/WinRM to the box).
