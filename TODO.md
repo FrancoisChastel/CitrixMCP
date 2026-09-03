@@ -23,17 +23,16 @@ using the **synced clipboard** as the only transport. See `README.md` for design
 - [x] `npm run build` compiles clean
 - [x] README with setup + MCP registration + safety + blocked-.ps1 workarounds
 
-## Verification (needs the real Citrix session)
-- [ ] Pick a working helper: `.ps1` blocked by SRP on this box — check
-      `$ExecutionContext.SessionState.LanguageMode`; if ConstrainedLanguage use
-      the Python helper, else PowerShell via `Get-Content ... | iex`
-- [ ] `python rdt_agent.py --dry-run` starts; is Python present? (`py --version`)
-- [ ] Run helper; `rdt_ping` round-trips
-- [ ] `rdt_run` executes and returns output; working dir persists
-- [ ] `rdt_screenshot` returns a PNG of the remote desktop
-- [ ] `rdt_upload` / `rdt_download` transfer a binary file intact (hash match)
-- [ ] Tune chunk size / poll interval for this Citrix link
-- [ ] Confirm clipboard restore behaves (user clipboard not trashed)
+## Verification (live against the real Citrix session)
+- [x] PowerShell helper runs (SRP on file worked around); host APPSWN13P, PS 5.1
+- [x] `ping` round-trips (~0.8s over Citrix clipboard)
+- [x] `exec` returns output; whoami/Get-Location/PS version OK (~1s)
+- [x] `upload` + Windows-side SHA-256 match on 700 KB (multi-chunk) payload
+- [x] `download` round-trip byte-identical (hash match); remote temp cleaned up
+- [ ] `rdt_screenshot` — PENDING: captures the real desktop; run on user's OK
+- [ ] Register the MCP server in the user's Claude client and use the tools live
+- [ ] Tune chunk size / poll interval if needed (defaults fine so far)
+- [x] Clipboard restore active during tests (RDT_RESTORE_CLIPBOARD=true)
 
 ## Nice-to-have / later
 - [ ] `rdt_list_windows` + `rdt_focus` helpers for GUI targeting
