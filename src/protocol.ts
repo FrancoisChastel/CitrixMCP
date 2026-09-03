@@ -71,11 +71,15 @@ export interface PutHead {
   path: string;
   totalBytes: number;
   overwrite: boolean;
+  /** If true, the streamed chunks are gzip-compressed; helper decompresses. */
+  gzip?: boolean;
 }
 
 /** Payload of a `get` request frame (role 'm'). */
 export interface GetRequest {
   path: string;
+  /** If true, ask the helper to gzip the file before streaming it back. */
+  gzip?: boolean;
 }
 
 export function encodeFrame(frame: Frame): string {

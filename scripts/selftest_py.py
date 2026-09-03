@@ -71,21 +71,25 @@ class MacSim:
         meta = (last.get("data") or {}).get("meta") or {}
         return buf.decode("utf-8"), meta
 
-    def put(self, path, data, overwrite=True):
+    def put(self, path, data, overwrite=True, gzip=False):
         import base64
-        total = max(1, (len(data) + Args.chunk_bytes - 1) // Args.chunk_bytes)
-        self._send("put", seq=0, total=total, data={"path": path, "totalBytes": len(data), "overwrite": overwrite})
+        import gzip as gz
+        wire = gz.compress(data) if gzip else data
+        total = max(1, (len(wire) + Args.chunk_bytes - 1) // Args.chunk_bytes)
+        self._send("put", seq=0, total=total,
+                   data={"path": path, "totalBytes": len(wire), "overwrite": overwrite, "gzip": gzip})
         ack = None
         for i in range(total):
-            chunk = data[i * Args.chunk_bytes:(i + 1) * Args.chunk_bytes]
+            chunk = wire[i * Args.chunk_bytes:(i + 1) * Args.chunk_bytes]
             ack = self._send("put", seq=i + 1, total=total, fin=(i + 1 == total),
                              data={"chunk": base64.b64encode(chunk).decode()})
         return (ack.get("data") or {}).get("bytesWritten")
 
-    def get(self, path):
-        first = self._send("get", data={"path": path})
+    def get(self, path, gzip=False):
+        import gzip as gz
+        first = self._send("get", data={"path": path, "gzip": gzip})
         buf, _ = self._drain(first)
-        return buf
+        return gz.decompress(buf) if gzip else buf
 
 
 failures = 0
@@ -119,10 +123,23 @@ def main():
 
     got = mac.get(tmp)
     check("download round-trips identical bytes", got == payload, "len=%d" % len(got))
-    try:
-        os.remove(tmp)
-    except OSError:
-        pass
+
+    # gzip round-trips (compressible payload) — both directions.
+    zpayload = (b"the quick brown fox jumps over the lazy dog\n" * 500)
+    ztmp = os.path.join(tempfile.gettempdir(), "rdt_selftest_gz.bin")
+    zwritten = mac.put(ztmp, zpayload, True, gzip=True)
+    check("gzip upload decompresses to original", zwritten == len(zpayload), "bytes=%s" % zwritten)
+    with open(ztmp, "rb") as fh:
+        on_disk = fh.read()
+    check("gzip upload landed identical on disk", on_disk == zpayload, "len=%d" % len(on_disk))
+    zgot = mac.get(ztmp, gzip=True)
+    check("gzip download round-trips identical", zgot == zpayload, "len=%d" % len(zgot))
+
+    for p in (tmp, ztmp):
+        try:
+            os.remove(p)
+        except OSError:
+            pass
 
     # Codec vector for cross-language check with the TS relay.
     vector = A.encode_frame({"v": 1, "sid": "S", "n": 5, "role": "w", "op": "ping", "fin": True, "data": {"version": 1}})

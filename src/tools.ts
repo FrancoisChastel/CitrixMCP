@@ -5,7 +5,7 @@
  * wrappers that build the right PowerShell so callers do not have to.
  */
 
-import { readFile, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -196,36 +196,47 @@ export function registerTools(server: McpServer, relay: Relay): void {
     {
       title: "Upload file/data to Windows",
       description:
-        "Send data from the Mac into a file in the Windows session. Provide either a local Mac file path (binary-safe) or inline text content. Data travels chunked over the clipboard.",
+        "Send data from the Mac into a file in the Windows session. Provide either a local Mac file path (binary-safe, streamed from disk, gzip-compressed by default) or inline text content. For large files prefer localPath.",
       inputSchema: {
         remotePath: z
           .string()
           .min(1)
-          .describe("Destination path on the Windows box, e.g. 'C:\\\\Users\\\\me\\\\out.txt'."),
-        localPath: z.string().optional().describe("Local Mac file to read and upload."),
+          .describe("Destination path on the Windows box, e.g. 'C:\\\\Users\\\\me\\\\out.bin'."),
+        localPath: z.string().optional().describe("Local Mac file to read and upload (streamed)."),
         content: z
           .string()
           .optional()
-          .describe("Inline UTF-8 text to write (alternative to localPath)."),
+          .describe("Inline UTF-8 text to write (alternative to localPath; not compressed)."),
         overwrite: z
           .boolean()
           .optional()
           .describe("Overwrite if the file exists (default true)."),
+        compress: z
+          .boolean()
+          .optional()
+          .describe("Gzip the file in transit (default true; ignored for inline content)."),
       },
     },
-    async ({ remotePath, localPath, content, overwrite }) =>
+    async ({ remotePath, localPath, content, overwrite, compress }) =>
       guarded(async () => {
         if (!localPath && content === undefined) {
           return text("Error: provide either localPath or content.", true);
         }
-        const data = localPath
-          ? await readFile(resolve(localPath))
-          : Buffer.from(content ?? "", "utf8");
+        if (localPath) {
+          const res = await relay.putFileFromDisk(remotePath, resolve(localPath), {
+            overwrite: overwrite ?? true,
+            gzip: compress ?? true,
+          });
+          const note = res.compressed
+            ? ` (gzip: ${fmtBytes(res.wireBytes)} on the wire, ${pct(res.wireBytes, res.bytesWritten)} of original)`
+            : "";
+          return text(
+            `Uploaded ${fmtBytes(res.bytesWritten)} to ${remotePath} from ${basename(localPath)}${note}`,
+          );
+        }
+        const data = Buffer.from(content ?? "", "utf8");
         const res = await relay.putFile(remotePath, data, overwrite ?? true);
-        return text(
-          `Uploaded ${res.bytesWritten} bytes to ${remotePath}` +
-            (localPath ? ` (from ${basename(localPath)})` : ""),
-        );
+        return text(`Uploaded ${res.bytesWritten} bytes to ${remotePath}`);
       }),
   );
 
@@ -234,7 +245,7 @@ export function registerTools(server: McpServer, relay: Relay): void {
     {
       title: "Download file from Windows",
       description:
-        "Read a file out of the Windows session and save it to a local path on the Mac. Binary-safe; data travels chunked over the clipboard.",
+        "Read a file out of the Windows session and save it to a local Mac path. Binary-safe, streamed straight to disk (safe for multi-GB files), gzip-compressed in transit by default.",
       inputSchema: {
         remotePath: z
           .string()
@@ -244,14 +255,18 @@ export function registerTools(server: McpServer, relay: Relay): void {
           .string()
           .min(1)
           .describe("Local Mac path to save the downloaded file to."),
+        compress: z
+          .boolean()
+          .optional()
+          .describe("Gzip in transit — helper compresses, Mac decompresses (default true)."),
       },
     },
-    async ({ remotePath, localPath }) =>
+    async ({ remotePath, localPath, compress }) =>
       guarded(async () => {
-        const data = await relay.getFile(remotePath);
         const abs = resolve(localPath);
-        await writeFile(abs, data);
-        return text(`Downloaded ${data.length} bytes from ${remotePath} to ${abs}`);
+        const res = await relay.getFileToDisk(remotePath, abs, { gzip: compress ?? true });
+        const note = res.compressed ? ` (gzip: ${fmtBytes(res.wireBytes)} on the wire)` : "";
+        return text(`Downloaded ${fmtBytes(res.bytesReceived)} from ${remotePath} to ${abs}${note}`);
       }),
   );
 
@@ -347,4 +362,16 @@ export function registerTools(server: McpServer, relay: Relay): void {
         return text(res.output.trim() || "[]");
       }),
   );
+}
+
+function fmtBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+function pct(part: number, whole: number): string {
+  if (whole <= 0) return "n/a";
+  return `${((part / whole) * 100).toFixed(0)}%`;
 }

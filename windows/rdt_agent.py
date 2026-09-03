@@ -36,8 +36,12 @@ import argparse
 import base64
 import binascii
 import ctypes
+import gzip as gziplib
+import io
 import json
+import os
 import re
+import shutil
 import struct
 import subprocess
 import sys
@@ -161,16 +165,6 @@ def decode_frame(raw):
         return obj
     except Exception:
         return None
-
-
-def split_bytes(data, size):
-    """Base64 chunks of `data`; always at least one element (empty for empty)."""
-    if not data:
-        return [""]
-    return [
-        base64.b64encode(data[i:i + size]).decode("ascii")
-        for i in range(0, len(data), size)
-    ]
 
 
 def make_reply(sid, n, op, data=None, seq=None, total=None, fin=False):
@@ -326,6 +320,9 @@ class Agent:
         self.out = None            # active outbound stream (exec/get/shot)
         self.put_file = None       # active inbound file object (put)
         self.put_written = 0
+        self.put_gzip = False
+        self.put_final = None
+        self.put_temp = None
         self.shell = Shell()
 
     def log(self, msg):
@@ -339,22 +336,46 @@ class Agent:
             except Exception:
                 pass
             self.put_file = None
+        if self.put_temp:
+            try:
+                os.remove(self.put_temp)
+            except OSError:
+                pass
+            self.put_temp = None
+        self._close_out()
+
+    def _close_out(self):
+        if self.out:
+            try:
+                self.out["stream"].close()
+            except Exception:
+                pass
+            temp = self.out.get("temp")
+            if temp:
+                try:
+                    os.remove(temp)
+                except OSError:
+                    pass
         self.out = None
 
-    def start_out(self, data, meta, op):
-        chunks = split_bytes(data, self.args.chunk_bytes)
-        self.out = {"chunks": chunks, "total": len(chunks), "meta": meta, "next": 1, "op": op}
+    def start_out(self, stream, length, meta, op, temp=None):
+        """Begin streaming an outbound reply from a readable byte stream, reading
+        the next chunk on demand so multi-GB files never sit in memory."""
+        total = max(1, (length + self.args.chunk_bytes - 1) // self.args.chunk_bytes)
+        self.out = {"stream": stream, "length": length, "total": total,
+                    "meta": meta, "op": op, "temp": temp, "seq_next": 1}
 
     def emit(self, incoming_n, seq):
-        total = self.out["total"]
-        fin = seq >= total - 1
-        data = {"chunk": self.out["chunks"][seq]}
+        stream = self.out["stream"]
+        chunk = stream.read(self.args.chunk_bytes)
+        fin = stream.tell() >= self.out["length"]
+        data = {"chunk": base64.b64encode(chunk).decode("ascii")}
         if fin and self.out["meta"]:
             data["meta"] = self.out["meta"]
-        op = self.out["op"]
+        op, total = self.out["op"], self.out["total"]
         reply = make_reply(self.sid, incoming_n + 1, op, data=data, seq=seq, total=total, fin=fin)
         if fin:
-            self.out = None
+            self._close_out()
         return reply
 
     def err(self, n, message):
@@ -371,6 +392,7 @@ class Agent:
                 "user": _envs("USERNAME"),
                 "pid": _os_pid(),
                 "powershell": "python-agent",
+                "gzip": True,
             }
             return make_reply(self.sid, n + 1, "ping", data=info, fin=True)
 
@@ -387,18 +409,26 @@ class Agent:
                 result = self.shell.run(cmd, timeout_ms)
             meta = {"exitCode": result["exit"], "durationMs": result["durationMs"],
                     "truncated": result["truncated"]}
-            self.start_out(result["text"].encode("utf-8"), meta, "exec")
+            payload = result["text"].encode("utf-8")
+            self.start_out(io.BytesIO(payload), len(payload), meta, "exec")
             return self.emit(n, 0)
 
         if op == "get":
             path = str(data.get("path", ""))
-            self.log("get: " + path)
+            want_gzip = bool(data.get("gzip"))
+            self.log("get: " + path + (" (gzip)" if want_gzip else ""))
             try:
-                with open(path, "rb") as fh:
-                    payload = fh.read()
+                if want_gzip:
+                    temp = path + ".rdtdown"
+                    with open(path, "rb") as src, gziplib.open(temp, "wb") as gz:
+                        shutil.copyfileobj(src, gz, 1024 * 1024)
+                    stream = open(temp, "rb")
+                    self.start_out(stream, os.path.getsize(temp), None, "get", temp=temp)
+                else:
+                    stream = open(path, "rb")
+                    self.start_out(stream, os.path.getsize(path), None, "get")
             except Exception as exc:
                 return self.err(n, "read failed: %s" % exc)
-            self.start_out(payload, None, "get")
             return self.emit(n, 0)
 
         if op == "shot":
@@ -407,19 +437,22 @@ class Agent:
                 payload = capture_png()
             except Exception as exc:
                 return self.err(n, "screenshot failed: %s" % exc)
-            self.start_out(payload, None, "shot")
+            self.start_out(io.BytesIO(payload), len(payload), None, "shot")
             return self.emit(n, 0)
 
         if op == "put":
             if f.get("seq") == 0:
                 path = str(data.get("path", ""))
                 overwrite = bool(data.get("overwrite"))
-                self.log("put: " + path)
-                import os
+                self.put_gzip = bool(data.get("gzip"))
+                self.put_final = path
+                self.log("put: " + path + (" (gzip)" if self.put_gzip else ""))
                 if os.path.exists(path) and not overwrite:
                     return self.err(n, "file exists and overwrite is false")
                 try:
-                    self.put_file = open(path, "wb")
+                    target = (path + ".rdtpart") if self.put_gzip else path
+                    self.put_temp = target if self.put_gzip else None
+                    self.put_file = open(target, "wb")
                     self.put_written = 0
                 except Exception as exc:
                     return self.err(n, "open failed: %s" % exc)
@@ -435,15 +468,25 @@ class Agent:
             if f.get("fin"):
                 self.put_file.close()
                 self.put_file = None
+                try:
+                    if self.put_gzip:
+                        with gziplib.open(self.put_temp, "rb") as gz, open(self.put_final, "wb") as out:
+                            shutil.copyfileobj(gz, out, 1024 * 1024)
+                        os.remove(self.put_temp)
+                        written = os.path.getsize(self.put_final)
+                    else:
+                        written = self.put_written
+                except Exception as exc:
+                    return self.err(n, "finalize failed: %s" % exc)
                 return make_reply(self.sid, n + 1, "ack",
-                                  data={"ok": True, "bytesWritten": self.put_written}, fin=True)
+                                  data={"ok": True, "bytesWritten": written}, fin=True)
             return make_reply(self.sid, n + 1, "ack", data={"seq": f.get("seq")})
 
         if op == "ack":
             if not self.out:
                 return self.err(n, "unexpected ack")
-            seq = self.out["next"]
-            self.out["next"] = seq + 1
+            seq = self.out["seq_next"]
+            self.out["seq_next"] = seq + 1
             return self.emit(n, seq)
 
         return self.err(n, "unknown op: %s" % op)

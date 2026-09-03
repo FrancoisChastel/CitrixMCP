@@ -56,9 +56,21 @@ Full run: `node scripts/test-all.mjs` → 10 passed, 0 failed, 2 skipped.
       (both validated), demo GIF (`docs/demo.gif`), 3-step onboarding
 - [x] Pushed to origin/main; CI runs on push
 
+## Big-file hardening (done)
+- [x] Gzip compression in transit for upload + download, default on
+- [x] Capability negotiation via ping (`gzip:true`) so new server + old helper
+      auto-falls back to raw (no corruption) — verified live on APPSWN13P
+- [x] Disk streaming both sides (no whole-file in memory) — safe for multi-GB
+- [x] `compress` tool option; hash-verify recipe documented
+- [x] Mirrored in BOTH helpers (rdt-agent.ps1, rdt_agent.py); Python fully
+      tested offline, TS relay tested offline, PS mirrors the Python logic
+- [ ] ACTION: user reloads the helper to enable compression/streaming (old
+      helper still works uncompressed via negotiation)
+
 ## Nice-to-have / later
-- [ ] Optional progress logging for large transfers
-- [ ] Retry/backoff tuning + metrics on retransmits
+- [ ] Resume/checkpoint a transfer interrupted mid-stream (by byte offset)
+- [ ] Progress logging for large transfers
+- [ ] Auto-skip compression for known-incompressible extensions
 - [ ] Publish to npm registry (currently git-install only)
 
 ## Notes / decisions

@@ -229,11 +229,30 @@ node scripts/test-all.mjs --interactive   # also tests keyboard input via Notepa
 Focused probes: `scripts/ping-client.mjs` (ping + one command) and
 `scripts/transfer-test.mjs` (700 KB binary round-trip with a Windows-side hash check).
 
+## Large files
+
+File transfer (`rdt_upload` / `rdt_download`) is built for big files, both ways:
+
+- **Gzip in transit, on by default.** Compressible data (logs, dumps, text,
+  most office files) shrinks a lot before it hits the clipboard. The server only
+  compresses when the helper advertises support (via `ping`), so an older helper
+  never receives bytes it can't decompress — it transparently falls back to raw.
+- **Streamed to and from disk.** Neither side loads the whole file into memory,
+  so multi-GB files won't OOM the server or the helper.
+- **Integrity is easy to verify** — hash on the Windows side with
+  `rdt_run "(Get-FileHash -Algorithm SHA256 -LiteralPath 'C:\\path').Hash"` and
+  compare with a local `shasum -a 256`.
+
+Throughput is still bounded by clipboard round-trip latency (see below), so for
+**very** large or already-compressed payloads, prefer a faster channel (a
+network share both machines can reach) when one is available. Pass
+`compress: false` for already-compressed files (zip, jpg, mp4).
+
 ## Limitations
 
 - **Control channel, not a bulk pipe** — ops are serialized; throughput is bounded
-  by clipboard sync latency × round-trips. Great for configs, scripts, logs, and
-  modest files; not for gigabytes.
+  by clipboard sync latency × round-trips. Compression widens the effective pipe
+  for compressible data, but incompressible multi-GB transfers are still slow.
 - **Don’t copy/paste while an op runs** — it transiently owns the clipboard.
 - **Manual bootstrap** — you start the helper once by hand (by design; no auto-start
   on a sensitive box). After that, the agent can launch more windows/apps itself.

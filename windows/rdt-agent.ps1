@@ -71,6 +71,9 @@ $script:LastResend = 0
 $script:Out = $null            # active outbound stream (exec/get/shot)
 $script:PutStream = $null      # active inbound file (put)
 $script:PutWritten = 0
+$script:PutGzip = $false
+$script:PutFinal = $null
+$script:PutTemp = $null
 $script:ExecRunspace = $null
 
 function Log($msg) {
@@ -113,34 +116,38 @@ function New-Error($n, [string]$message) {
   return New-Reply -n ($n + 1) -op 'err' -fin $true -data @{ message = $message }
 }
 
-# Split a byte array into base64 chunks. Always returns at least one element
-# (an empty string for empty input), and the leading comma keeps it an array.
-function Split-Bytes([byte[]]$bytes, [int]$size) {
-  if ($null -eq $bytes -or $bytes.Length -eq 0) { return , @('') }
-  $chunks = New-Object System.Collections.ArrayList
-  for ($i = 0; $i -lt $bytes.Length; $i += $size) {
-    $len = [Math]::Min($size, $bytes.Length - $i)
-    $slice = New-Object byte[] $len
-    [Array]::Copy($bytes, $i, $slice, 0, $len)
-    [void]$chunks.Add([Convert]::ToBase64String($slice))
-  }
-  return , ($chunks.ToArray())
+# --- outbound stream (exec / get / shot replies) -----------------------------
+# The reply is streamed from a .NET Stream, reading the next chunk on demand so a
+# multi-GB file never sits in memory. exec/shot wrap their bytes in a
+# MemoryStream; get opens a FileStream (optionally over a gzip temp).
+function Start-OutStream([System.IO.Stream]$stream, [long]$length, $meta, [string]$op, [string]$temp) {
+  $total = [int][Math]::Max(1, [Math]::Ceiling($length / $ChunkBytes))
+  $script:Out = @{ Stream = $stream; Length = $length; Total = $total; Meta = $meta; Op = $op; Temp = $temp; SeqNext = 1 }
 }
 
-# --- outbound stream (exec / get / shot replies) -----------------------------
-function Start-OutStream([byte[]]$bytes, $meta, [string]$op) {
-  $chunks = Split-Bytes $bytes $ChunkBytes
-  $script:Out = @{ Chunks = $chunks; Total = $chunks.Count; Meta = $meta; NextSeq = 1; Op = $op }
+function Close-OutStream {
+  if ($script:Out) {
+    try { $script:Out.Stream.Dispose() } catch {}
+    if ($script:Out.Temp) { Remove-Item -LiteralPath $script:Out.Temp -Force -ErrorAction SilentlyContinue }
+    $script:Out = $null
+  }
 }
 
 function Emit-Chunk($incomingN, [int]$seq) {
-  $total = $script:Out.Total
-  $fin = ($seq -ge ($total - 1))
-  $data = @{ chunk = $script:Out.Chunks[$seq] }
+  $buf = New-Object byte[] $ChunkBytes
+  $read = $script:Out.Stream.Read($buf, 0, $ChunkBytes)
+  $fin = ($script:Out.Stream.Position -ge $script:Out.Length)
+  if ($read -le 0) { $b64 = '' }
+  elseif ($read -eq $ChunkBytes) { $b64 = [Convert]::ToBase64String($buf) }
+  else {
+    $slice = New-Object byte[] $read
+    [Array]::Copy($buf, 0, $slice, 0, $read)
+    $b64 = [Convert]::ToBase64String($slice)
+  }
+  $data = @{ chunk = $b64 }
   if ($fin -and $script:Out.Meta) { $data.meta = $script:Out.Meta }
-  $op = $script:Out.Op
-  $reply = New-Reply -n ($incomingN + 1) -op $op -seq $seq -total $total -fin $fin -data $data
-  if ($fin) { $script:Out = $null }
+  $reply = New-Reply -n ($incomingN + 1) -op $script:Out.Op -seq $seq -total $script:Out.Total -fin $fin -data $data
+  if ($fin) { Close-OutStream }
   return $reply
 }
 
@@ -197,6 +204,7 @@ function Process-Frame($frame) {
         user       = $env:USERNAME
         pid        = $PID
         powershell = $PSVersionTable.PSVersion.ToString()
+        gzip       = $true
       }
       return New-Reply -n ($frame.n + 1) -op 'ping' -fin $true -data $data
     }
@@ -216,33 +224,54 @@ function Process-Frame($frame) {
         $r = Invoke-UserCommand $cmd $to
       }
       $meta = @{ exitCode = $r.exit; durationMs = $r.durationMs; truncated = $r.truncated }
-      Start-OutStream ([Text.Encoding]::UTF8.GetBytes($r.text)) $meta 'exec'
+      $bytes = [Text.Encoding]::UTF8.GetBytes($r.text)
+      Start-OutStream (New-Object System.IO.MemoryStream(, $bytes)) $bytes.Length $meta 'exec' $null
       return Emit-Chunk $frame.n 0
     }
     'get' {
       $path = [string]$frame.data.path
-      Log ("get: " + $path)
-      try { $bytes = [IO.File]::ReadAllBytes($path) }
-      catch { return New-Error $frame.n ("read failed: " + $_.Exception.Message) }
-      Start-OutStream $bytes $null 'get'
+      $gz = [bool]$frame.data.gzip
+      Log ("get: " + $path + $(if ($gz) { ' (gzip)' } else { '' }))
+      try {
+        if ($gz) {
+          $temp = $path + '.rdtdown'
+          $inFs = [System.IO.File]::OpenRead($path)
+          $outFs = [System.IO.File]::Create($temp)
+          $gzs = New-Object System.IO.Compression.GZipStream($outFs, [System.IO.Compression.CompressionMode]::Compress)
+          $inFs.CopyTo($gzs)
+          $gzs.Dispose(); $outFs.Dispose(); $inFs.Dispose()
+          $stream = [System.IO.File]::OpenRead($temp)
+          Start-OutStream $stream $stream.Length $null 'get' $temp
+        } else {
+          $stream = [System.IO.File]::OpenRead($path)
+          Start-OutStream $stream $stream.Length $null 'get' $null
+        }
+      } catch { return New-Error $frame.n ("read failed: " + $_.Exception.Message) }
       return Emit-Chunk $frame.n 0
     }
     'shot' {
       Log 'screenshot'
       try { $bytes = Get-ScreenPng }
       catch { return New-Error $frame.n ("screenshot failed: " + $_.Exception.Message) }
-      Start-OutStream $bytes $null 'shot'
+      Start-OutStream (New-Object System.IO.MemoryStream(, $bytes)) $bytes.Length $null 'shot' $null
       return Emit-Chunk $frame.n 0
     }
     'put' {
       if ($frame.seq -eq 0) {
         $path = [string]$frame.data.path
         $ov = [bool]$frame.data.overwrite
-        Log ("put: " + $path)
+        $script:PutGzip = [bool]$frame.data.gzip
+        $script:PutFinal = $path
+        Log ("put: " + $path + $(if ($script:PutGzip) { ' (gzip)' } else { '' }))
         if ((Test-Path -LiteralPath $path) -and -not $ov) {
           return New-Error $frame.n 'file exists and overwrite is false'
         }
-        try { $script:PutStream = [IO.File]::Open($path, 'Create', 'Write'); $script:PutWritten = 0 }
+        try {
+          $target = if ($script:PutGzip) { $path + '.rdtpart' } else { $path }
+          $script:PutTemp = if ($script:PutGzip) { $target } else { $null }
+          $script:PutStream = [IO.File]::Open($target, 'Create', 'Write')
+          $script:PutWritten = 0
+        }
         catch { return New-Error $frame.n ("open failed: " + $_.Exception.Message) }
         return New-Reply -n ($frame.n + 1) -op 'ack' -data @{ ready = $true }
       }
@@ -254,14 +283,28 @@ function Process-Frame($frame) {
       } catch { return New-Error $frame.n ("write failed: " + $_.Exception.Message) }
       if ($frame.fin) {
         $script:PutStream.Close(); $script:PutStream = $null
-        return New-Reply -n ($frame.n + 1) -op 'ack' -fin $true -data @{ ok = $true; bytesWritten = $script:PutWritten }
+        try {
+          if ($script:PutGzip) {
+            $inFs = [System.IO.File]::OpenRead($script:PutTemp)
+            $gzs = New-Object System.IO.Compression.GZipStream($inFs, [System.IO.Compression.CompressionMode]::Decompress)
+            $outFs = [System.IO.File]::Create($script:PutFinal)
+            $gzs.CopyTo($outFs)
+            $outFs.Dispose(); $gzs.Dispose(); $inFs.Dispose()
+            Remove-Item -LiteralPath $script:PutTemp -Force -ErrorAction SilentlyContinue
+            $script:PutTemp = $null
+            $written = (Get-Item -LiteralPath $script:PutFinal).Length
+          } else {
+            $written = $script:PutWritten
+          }
+        } catch { return New-Error $frame.n ("finalize failed: " + $_.Exception.Message) }
+        return New-Reply -n ($frame.n + 1) -op 'ack' -fin $true -data @{ ok = $true; bytesWritten = $written }
       }
       return New-Reply -n ($frame.n + 1) -op 'ack' -data @{ seq = $frame.seq }
     }
     'ack' {
       if (-not $script:Out) { return New-Error $frame.n 'unexpected ack' }
-      $seq = [int]$script:Out.NextSeq
-      $script:Out.NextSeq = $seq + 1
+      $seq = [int]$script:Out.SeqNext
+      $script:Out.SeqNext = $seq + 1
       return Emit-Chunk $frame.n $seq
     }
     default { return New-Error $frame.n ("unknown op: " + $frame.op) }
@@ -270,7 +313,8 @@ function Process-Frame($frame) {
 
 function Reset-Transfer {
   if ($script:PutStream) { try { $script:PutStream.Close() } catch {} ; $script:PutStream = $null }
-  $script:Out = $null
+  if ($script:PutTemp) { Remove-Item -LiteralPath $script:PutTemp -Force -ErrorAction SilentlyContinue; $script:PutTemp = $null }
+  Close-OutStream
 }
 
 # --- startup -----------------------------------------------------------------

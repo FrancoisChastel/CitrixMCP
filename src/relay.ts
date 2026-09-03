@@ -8,6 +8,14 @@
  * best-effort basis.
  */
 
+import { createReadStream, createWriteStream, type WriteStream } from "node:fs";
+import { open, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { randomUUID } from "node:crypto";
+import { once } from "node:events";
+import { pipeline } from "node:stream/promises";
+import { createGunzip, createGzip } from "node:zlib";
 import type { ClipboardPort } from "./clipboard.js";
 import type { Config } from "./config.js";
 import { PROTOCOL_VERSION } from "./config.js";
@@ -29,6 +37,9 @@ export interface PingInfo {
   user: string;
   pid: number;
   powershell: string;
+  /** New helpers advertise gzip support so the server never sends compressed
+   * bytes to an old helper that would write them without decompressing. */
+  gzip?: boolean;
 }
 
 export interface ExecResult {
@@ -36,6 +47,18 @@ export interface ExecResult {
   exitCode: number | null;
   durationMs: number;
   truncated: boolean;
+}
+
+export interface UploadResult {
+  bytesWritten: number;
+  wireBytes: number;
+  compressed: boolean;
+}
+
+export interface DownloadResult {
+  bytesReceived: number;
+  wireBytes: number;
+  compressed: boolean;
 }
 
 interface TransactExtra {
@@ -49,6 +72,7 @@ export class Relay {
   private readonly sid = newSessionId();
   private lastN = 0;
   private lastSentEncoded: string | null = null;
+  private helperGzip: boolean | null = null;
   private readonly mutex = new Mutex();
 
   constructor(
@@ -68,8 +92,16 @@ export class Relay {
         { data: { t: now() } },
         this.cfg.frameTimeoutMs,
       );
-      return reply.data as PingInfo;
+      const info = reply.data as PingInfo;
+      this.helperGzip = !!info.gzip;
+      return info;
     });
+  }
+
+  /** True if the connected helper can decompress gzip transfers (cached). */
+  private async gzipSupported(): Promise<boolean> {
+    if (this.helperGzip === null) await this.ping();
+    return this.helperGzip === true;
   }
 
   /** Run one PowerShell command and collect its merged output. */
@@ -140,7 +172,7 @@ export class Relay {
     });
   }
 
-  /** Read a file out of the Windows session (Windows -> Mac). */
+  /** Read a small file into memory (Windows -> Mac). Prefer getFileToDisk for large files. */
   getFile(remotePath: string): Promise<Buffer> {
     return this.guard(async () => {
       const req: GetRequest = { path: remotePath };
@@ -152,6 +184,115 @@ export class Relay {
       const { buffer } = await this.collectChunks(first);
       return buffer;
     });
+  }
+
+  /**
+   * Upload a local file to the Windows session, streaming from disk so a
+   * multi-GB file never sits in memory. With gzip, the file is compressed to a
+   * Mac-side temp first (outside the clipboard lock) so fewer bytes travel and
+   * the helper decompresses on arrival.
+   */
+  async putFileFromDisk(
+    remotePath: string,
+    localPath: string,
+    opts: { overwrite?: boolean; gzip?: boolean } = {},
+  ): Promise<UploadResult> {
+    const overwrite = opts.overwrite ?? true;
+    const gzip = (opts.gzip ?? false) && (await this.gzipSupported());
+    const originalBytes = (await stat(localPath)).size;
+    let sourcePath = localPath;
+    let tempPath: string | null = null;
+    if (gzip) {
+      tempPath = join(tmpdir(), `rdt-up-${randomUUID()}.gz`);
+      await pipeline(createReadStream(localPath), createGzip(), createWriteStream(tempPath));
+      sourcePath = tempPath;
+    }
+    try {
+      const wireBytes = (await stat(sourcePath)).size;
+      const bytesWritten = await this.guard(async () => {
+        const total = Math.max(1, Math.ceil(wireBytes / this.cfg.chunkBytes));
+        const head: PutHead = { path: remotePath, totalBytes: wireBytes, overwrite, gzip };
+        await this.transact("put", { seq: 0, total, data: head }, this.cfg.frameTimeoutMs);
+        const fh = await open(sourcePath, "r");
+        const buf = Buffer.allocUnsafe(this.cfg.chunkBytes);
+        let ack: Frame | null = null;
+        try {
+          for (let i = 0; i < total; i++) {
+            const { bytesRead } = await fh.read(buf, 0, this.cfg.chunkBytes, i * this.cfg.chunkBytes);
+            const seq = i + 1;
+            ack = await this.transact(
+              "put",
+              { seq, total, fin: seq === total, data: { chunk: buf.subarray(0, bytesRead).toString("base64") } },
+              this.cfg.frameTimeoutMs,
+            );
+          }
+        } finally {
+          await fh.close();
+        }
+        const d = ack?.data as { bytesWritten?: number } | undefined;
+        return d?.bytesWritten ?? originalBytes;
+      });
+      return { bytesWritten, wireBytes, compressed: gzip };
+    } finally {
+      if (tempPath) await rm(tempPath, { force: true });
+    }
+  }
+
+  /**
+   * Download a file from the Windows session straight to a local path, streaming
+   * so a multi-GB file never sits in memory. With gzip, the helper compresses
+   * before sending and the Mac decompresses after (outside the clipboard lock).
+   */
+  async getFileToDisk(
+    remotePath: string,
+    localPath: string,
+    opts: { gzip?: boolean } = {},
+  ): Promise<DownloadResult> {
+    const gzip = (opts.gzip ?? false) && (await this.gzipSupported());
+    const tempPath = gzip ? join(tmpdir(), `rdt-dn-${randomUUID()}.gz`) : localPath;
+    let wireBytes = 0;
+    try {
+      wireBytes = await this.guard(async () => {
+        const req: GetRequest = { path: remotePath, gzip };
+        const first = await this.transact("get", { data: req }, this.cfg.frameTimeoutMs);
+        const ws = createWriteStream(tempPath);
+        try {
+          const received = await this.receiveToStream(first, ws);
+          ws.end();
+          await once(ws, "finish");
+          return received;
+        } catch (err) {
+          ws.destroy();
+          throw err;
+        }
+      });
+    } catch (err) {
+      if (gzip) await rm(tempPath, { force: true });
+      throw err;
+    }
+    if (gzip) {
+      await pipeline(createReadStream(tempPath), createGunzip(), createWriteStream(localPath));
+      await rm(tempPath, { force: true });
+    }
+    const bytesReceived = gzip ? (await stat(localPath)).size : wireBytes;
+    return { bytesReceived, wireBytes, compressed: gzip };
+  }
+
+  /** Drain a multi-frame reply straight to a writable stream (no full buffering). */
+  private async receiveToStream(first: Frame, ws: WriteStream): Promise<number> {
+    let reply = first;
+    let total = 0;
+    for (;;) {
+      const d = reply.data as { chunk?: string } | undefined;
+      if (d?.chunk) {
+        const bytes = Buffer.from(d.chunk, "base64");
+        total += bytes.length;
+        if (!ws.write(bytes)) await once(ws, "drain");
+      }
+      if (reply.fin) break;
+      reply = await this.transact("ack", { data: { seq: reply.seq } }, this.cfg.frameTimeoutMs);
+    }
+    return total;
   }
 
   /**

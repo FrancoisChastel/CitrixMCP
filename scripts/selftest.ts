@@ -7,6 +7,10 @@
  * Run after `npm run build`:  node --experimental-strip-types scripts/selftest.ts
  */
 
+import { gunzipSync, gzipSync } from "node:zlib";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { MemoryClipboard } from "../dist/clipboard.js";
 import { Relay } from "../dist/relay.js";
 import { decodeFrame, encodeFrame } from "../dist/protocol.js";
@@ -75,7 +79,7 @@ class SimAgent {
       case "ping":
         return this.reply(f.n + 1, "ping", {
           fin: true,
-          data: { version: 1, host: "SIM", user: "sim", pid: 42, powershell: "sim-5.1" },
+          data: { version: 1, host: "SIM", user: "sim", pid: 42, powershell: "sim-5.1", gzip: true },
         });
       case "exec": {
         const out = `echo:${f.data.cmd}\n`.repeat(40);
@@ -85,7 +89,7 @@ class SimAgent {
       case "get": {
         const b = this.fs.get(f.data.path);
         if (!b) return this.reply(f.n + 1, "err", { fin: true, data: { message: "not found" } });
-        this.startOut(b, null, "get");
+        this.startOut(f.data.gzip ? gzipSync(b) : b, null, "get");
         return this.emit(f.n, 0);
       }
       case "shot": {
@@ -95,12 +99,13 @@ class SimAgent {
       }
       case "put": {
         if (f.seq === 0) {
-          this.put = { path: f.data.path, chunks: [] };
+          this.put = { path: f.data.path, chunks: [], gzip: !!f.data.gzip };
           return this.reply(f.n + 1, "ack", { data: { ready: true } });
         }
         this.put.chunks.push(Buffer.from(f.data.chunk, "base64"));
         if (f.fin) {
-          const buf = Buffer.concat(this.put.chunks);
+          const wire = Buffer.concat(this.put.chunks);
+          const buf = this.put.gzip ? gunzipSync(wire) : wire;
           this.fs.set(this.put.path, buf);
           const bytesWritten = buf.length;
           this.put = null;
@@ -179,6 +184,34 @@ async function main() {
     shot.length === 504 && shot[0] === 0x89 && shot[1] === 0x50,
     `len=${shot.length}`,
   );
+
+  // Disk-streaming + gzip round-trip through the real relay methods.
+  const dir = mkdtempSync(join(tmpdir(), "rdt-test-"));
+  const bigPayload = Buffer.concat(
+    Array.from({ length: 300 }, () => Buffer.from("the quick brown fox 0123456789\n")),
+  ); // compressible, ~9 KB -> many 64B chunks
+  const srcFile = join(dir, "src.bin");
+  const outFile = join(dir, "out.bin");
+  writeFileSync(srcFile, bigPayload);
+
+  const upGz = await relay.putFileFromDisk("C:\\tmp\\big.bin", srcFile, { gzip: true });
+  check(
+    "gzip upload streams + decompresses on the far side",
+    upGz.bytesWritten === bigPayload.length && upGz.wireBytes < bigPayload.length,
+    `orig=${bigPayload.length} wire=${upGz.wireBytes}`,
+  );
+
+  const dnGz = await relay.getFileToDisk("C:\\tmp\\big.bin", outFile, { gzip: true });
+  const roundTrip = readFileSync(outFile);
+  check(
+    "gzip download streams to disk, byte-identical",
+    dnGz.bytesReceived === bigPayload.length && Buffer.compare(roundTrip, bigPayload) === 0,
+    `len=${roundTrip.length} wire=${dnGz.wireBytes}`,
+  );
+
+  // Non-gzip disk streaming too.
+  const dnRaw = await relay.getFileToDisk("C:\\tmp\\big.bin", outFile, { gzip: false });
+  check("raw download streams to disk", Buffer.compare(readFileSync(outFile), bigPayload) === 0, `len=${dnRaw.bytesReceived}`);
 
   agent.running = false;
   await sleep(10);
