@@ -39,3 +39,6 @@ using the **synced clipboard** as the only transport. See `README.md` for design
 - Transport is clipboard-only (Citrix double-hop; no SSH/WinRM to the box).
 - Windows helper is deliberately non-persistent, no-network, prints every command.
 - Big clipboard payloads are supported here, so chunk size defaults high (256 KB).
+- Repo: git@github.com:FrancoisChastel/CitrixMCP.git — pushed to `main`.
+- Self-test + `npm run build` + MCP tools/list smoke test all green on the Mac.
+- Remaining work is live verification inside the real Citrix session (see above).
