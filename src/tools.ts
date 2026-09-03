@@ -1,0 +1,249 @@
+/**
+ * MCP tool surface. Every tool ultimately rides the clipboard relay. The two
+ * primitives the Windows helper implements are exec (run PowerShell) and the
+ * chunked transfers (put/get/shot); the richer tools here are ergonomic
+ * wrappers that build the right PowerShell so callers do not have to.
+ */
+
+import { readFile, writeFile } from "node:fs/promises";
+import { basename, resolve } from "node:path";
+import { z } from "zod";
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { Relay, ExecResult } from "./relay.js";
+import { config } from "./config.js";
+import { buildLaunch, buildSendKeys } from "./psbuilders.js";
+import { log } from "./util.js";
+
+type TextResult = {
+  content: { type: "text"; text: string }[];
+  isError?: boolean;
+};
+
+const text = (body: string, isError = false): TextResult => ({
+  content: [{ type: "text", text: body }],
+  isError,
+});
+
+function formatExec(result: ExecResult): string {
+  const lines: string[] = [];
+  lines.push(result.output.trimEnd() || "(no output)");
+  lines.push("");
+  lines.push(
+    `— exit code: ${result.exitCode ?? "n/a"} · ${result.durationMs}ms${
+      result.truncated ? " · TIMED OUT (partial output; command may still be running on Windows)" : ""
+    }`,
+  );
+  return lines.join("\n");
+}
+
+async function guarded(
+  fn: () => Promise<TextResult>,
+): Promise<TextResult> {
+  try {
+    return await fn();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log("error", `tool failed: ${msg}`);
+    return text(`Error: ${msg}`, true);
+  }
+}
+
+export function registerTools(server: McpServer, relay: Relay): void {
+  server.registerTool(
+    "rdt_ping",
+    {
+      title: "Ping remote helper",
+      description:
+        "Check that the Windows PowerShell helper is running and the clipboard link is alive. Returns the remote host, user, and PowerShell version. Run this first.",
+      inputSchema: {},
+    },
+    async () =>
+      guarded(async () => {
+        const info = await relay.ping();
+        return text(
+          `Helper is alive.\n` +
+            `host: ${info.host}\nuser: ${info.user}\npid: ${info.pid}\n` +
+            `powershell: ${info.powershell}\nprotocol: v${info.version}`,
+        );
+      }),
+  );
+
+  server.registerTool(
+    "rdt_run",
+    {
+      title: "Run PowerShell",
+      description:
+        "Run a PowerShell command or script in the persistent remote session and return its merged output (stdout + errors). Session state (current directory, variables, imported modules) persists between calls. This is the universal control tool — anything PowerShell can do on the box, you can do here.",
+      inputSchema: {
+        command: z.string().min(1).describe("PowerShell command or script to run."),
+        timeoutMs: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe(
+            `Max time to wait for completion before returning partial output (default ${config.execTimeoutMs}ms).`,
+          ),
+      },
+    },
+    async ({ command, timeoutMs }) =>
+      guarded(async () => {
+        const result = await relay.exec(command, timeoutMs ?? config.execTimeoutMs);
+        return text(formatExec(result), result.truncated);
+      }),
+  );
+
+  server.registerTool(
+    "rdt_launch",
+    {
+      title: "Launch a program",
+      description:
+        "Start a program in the Windows session (e.g. 'powershell.exe', 'notepad.exe', 'explorer.exe', a full path, or a document). Returns the launched process name and PID.",
+      inputSchema: {
+        program: z
+          .string()
+          .min(1)
+          .describe("Executable, command, or file to launch, e.g. 'powershell.exe'."),
+        args: z.string().optional().describe("Command-line arguments, as one string."),
+        workingDirectory: z
+          .string()
+          .optional()
+          .describe("Working directory to start the process in."),
+      },
+    },
+    async ({ program, args, workingDirectory }) =>
+      guarded(async () => {
+        const cmd = buildLaunch({ program, args, workingDirectory });
+        const result = await relay.exec(cmd, 30_000);
+        return text(formatExec(result), result.exitCode !== 0 && result.exitCode !== null);
+      }),
+  );
+
+  server.registerTool(
+    "rdt_send_keys",
+    {
+      title: "Send keystrokes",
+      description:
+        "Send keystrokes to the Windows session using .NET SendKeys syntax (e.g. 'hello{ENTER}', '^c' for Ctrl+C, '%{F4}' for Alt+F4). Optionally activate a window by title first. Use this to drive GUI apps or a foreground console.",
+      inputSchema: {
+        keys: z.string().min(1).describe("Keys in SendKeys syntax."),
+        windowTitle: z
+          .string()
+          .optional()
+          .describe("If set, activate the window whose title contains this text first."),
+        delayMs: z
+          .number()
+          .int()
+          .nonnegative()
+          .optional()
+          .describe("Pause after activating the window before typing (default 300ms)."),
+      },
+    },
+    async ({ keys, windowTitle, delayMs }) =>
+      guarded(async () => {
+        const cmd = buildSendKeys({ keys, windowTitle, delayMs });
+        const result = await relay.exec(cmd, 30_000);
+        return text(formatExec(result));
+      }),
+  );
+
+  server.registerTool(
+    "rdt_screenshot",
+    {
+      title: "Screenshot remote desktop",
+      description:
+        "Capture the Windows session desktop as a PNG and return it as an image so you can see the current state of the remote instance. Optionally also saves the PNG to a local file on the Mac.",
+      inputSchema: {
+        savePath: z
+          .string()
+          .optional()
+          .describe("Optional local Mac path to also save the PNG to."),
+      },
+    },
+    async ({ savePath }) => {
+      try {
+        const png = await relay.screenshot();
+        const content: (
+          | { type: "text"; text: string }
+          | { type: "image"; data: string; mimeType: string }
+        )[] = [
+          { type: "image", data: png.toString("base64"), mimeType: "image/png" },
+        ];
+        if (savePath) {
+          const abs = resolve(savePath);
+          await writeFile(abs, png);
+          content.push({ type: "text", text: `Saved ${png.length} bytes to ${abs}` });
+        }
+        return { content };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log("error", `screenshot failed: ${msg}`);
+        return text(`Error: ${msg}`, true);
+      }
+    },
+  );
+
+  server.registerTool(
+    "rdt_upload",
+    {
+      title: "Upload file/data to Windows",
+      description:
+        "Send data from the Mac into a file in the Windows session. Provide either a local Mac file path (binary-safe) or inline text content. Data travels chunked over the clipboard.",
+      inputSchema: {
+        remotePath: z
+          .string()
+          .min(1)
+          .describe("Destination path on the Windows box, e.g. 'C:\\\\Users\\\\me\\\\out.txt'."),
+        localPath: z.string().optional().describe("Local Mac file to read and upload."),
+        content: z
+          .string()
+          .optional()
+          .describe("Inline UTF-8 text to write (alternative to localPath)."),
+        overwrite: z
+          .boolean()
+          .optional()
+          .describe("Overwrite if the file exists (default true)."),
+      },
+    },
+    async ({ remotePath, localPath, content, overwrite }) =>
+      guarded(async () => {
+        if (!localPath && content === undefined) {
+          return text("Error: provide either localPath or content.", true);
+        }
+        const data = localPath
+          ? await readFile(resolve(localPath))
+          : Buffer.from(content ?? "", "utf8");
+        const res = await relay.putFile(remotePath, data, overwrite ?? true);
+        return text(
+          `Uploaded ${res.bytesWritten} bytes to ${remotePath}` +
+            (localPath ? ` (from ${basename(localPath)})` : ""),
+        );
+      }),
+  );
+
+  server.registerTool(
+    "rdt_download",
+    {
+      title: "Download file from Windows",
+      description:
+        "Read a file out of the Windows session and save it to a local path on the Mac. Binary-safe; data travels chunked over the clipboard.",
+      inputSchema: {
+        remotePath: z
+          .string()
+          .min(1)
+          .describe("Source file path on the Windows box."),
+        localPath: z
+          .string()
+          .min(1)
+          .describe("Local Mac path to save the downloaded file to."),
+      },
+    },
+    async ({ remotePath, localPath }) =>
+      guarded(async () => {
+        const data = await relay.getFile(remotePath);
+        const abs = resolve(localPath);
+        await writeFile(abs, data);
+        return text(`Downloaded ${data.length} bytes from ${remotePath} to ${abs}`);
+      }),
+  );
+}
