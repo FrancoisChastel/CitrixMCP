@@ -1,6 +1,18 @@
-#requires -Version 5.1
 <#
   rdt-agent.ps1 — Remote Desktop Terminal helper (RESPONDER side)
+  Requires Windows PowerShell 5.1+ (run in powershell.exe, which is STA).
+
+  IF RUNNING THE FILE IS BLOCKED by Software Restriction Policy / execution
+  policy ("cannot be loaded because its operation is blocked..."), run the code
+  interactively instead — the block is on the *file*, not on PowerShell:
+
+      Get-Content .\rdt-agent.ps1 -Raw | Invoke-Expression
+
+  First confirm the session allows full language (must print "FullLanguage"):
+
+      $ExecutionContext.SessionState.LanguageMode
+
+  If it prints "ConstrainedLanguage", use the Python helper (rdt_agent.py).
 
   WHAT THIS IS
     A small, self-contained relay you run inside your Windows PowerShell session.

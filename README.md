@@ -79,18 +79,46 @@ claude mcp add citrix -- node /ABSOLUTE/PATH/TO/CitrixMCP/dist/index.js
 
 ### 3. Start the helper (inside the Citrix/RDP Windows session)
 
-Open **Windows PowerShell** (`powershell.exe`, v5.1) in the remote session, copy
-`windows/rdt-agent.ps1` into it (paste the file, or paste its contents), and run:
+There are two interchangeable helpers — both speak the identical clipboard
+protocol, so the Mac server works with either. Pick whichever your locked-down
+box allows.
+
+**Option A — PowerShell** (`windows/rdt-agent.ps1`). Open **Windows PowerShell**
+(`powershell.exe`, v5.1) in the remote session and run:
 
 ```powershell
-# safe first run — shows commands but does not execute them
-.\rdt-agent.ps1 -DryRun
-
-# real run
-.\rdt-agent.ps1
+.\rdt-agent.ps1 -DryRun   # safe first run: shows commands, executes nothing
+.\rdt-agent.ps1           # real run
 ```
 
-Leave it running. Stop it anytime with **Ctrl+C**.
+> **If you see "cannot be loaded because its operation is blocked by software
+> restriction policies"** — that block is on the `.ps1` *file*, not on
+> PowerShell. First confirm the session allows full language (must print
+> `FullLanguage`):
+>
+> ```powershell
+> $ExecutionContext.SessionState.LanguageMode
+> ```
+>
+> If `FullLanguage`, run the code interactively instead of as a file:
+>
+> ```powershell
+> Get-Content .\rdt-agent.ps1 -Raw | Invoke-Expression                       # real run
+> & ([ScriptBlock]::Create((Get-Content .\rdt-agent.ps1 -Raw))) -DryRun      # dry run
+> ```
+>
+> If it prints `ConstrainedLanguage`, PowerShell is locked down — use Option B.
+
+**Option B — Python** (`windows/rdt_agent.py`). Standard library only; needs any
+Python 3.6+ on the box. Commands still run through PowerShell under the hood, and
+the working directory persists between commands (variables/modules do not).
+
+```powershell
+python rdt_agent.py --dry-run   # or:  py rdt_agent.py --dry-run
+python rdt_agent.py             # real run
+```
+
+Leave whichever helper you chose running. Stop it anytime with **Ctrl+C**.
 
 ### 4. Verify
 
@@ -142,12 +170,15 @@ The helper takes matching flags: `-PollMs`, `-ChunkBytes`, `-DefaultTimeoutMs`,
 ## Development
 
 ```bash
-npm run build      # compile TS -> dist/
-npm run selftest   # loopback protocol test, no Windows needed
+npm run build                    # compile TS -> dist/
+npm run selftest                 # loopback protocol test (Mac relay), no Windows
+python3 scripts/selftest_py.py   # Python responder test, no Windows
 ```
 
-The self-test runs the real Mac-side relay against an in-process port of the
+The TS self-test runs the real Mac-side relay against an in-process port of the
 Windows responder over an in-memory clipboard, exercising ping / exec / upload /
-download / screenshot with a tiny chunk size so the multi-frame paths run.
+download / screenshot with a tiny chunk size so the multi-frame paths run. The
+Python test drives `windows/rdt_agent.py` the same way. The two codecs are
+verified byte-identical, so either helper interoperates with the server.
 
 See `TODO.md` for status and remaining verification against the live session.
