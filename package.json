@@ -3,7 +3,30 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "MCP server that drives a PowerShell session inside a Citrix/RDP window over the synced clipboard.",
+  "description": "MCP server that drives a Windows PowerShell session inside a Citrix/RDP window over the synced clipboard — run commands, control the desktop, transfer files, no SSH/WinRM needed.",
+  "license": "MIT",
+  "author": "Francois Chastel",
+  "homepage": "https://github.com/FrancoisChastel/CitrixMCP#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/FrancoisChastel/CitrixMCP.git"
+  },
+  "bugs": {
+    "url": "https://github.com/FrancoisChastel/CitrixMCP/issues"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "citrix",
+    "rdp",
+    "powershell",
+    "remote-desktop",
+    "clipboard",
+    "windows",
+    "automation",
+    "claude",
+    "anthropic"
+  ],
   "bin": {
     "rdt-mcp": "dist/index.js",
     "citrix-mcp": "dist/index.js"
