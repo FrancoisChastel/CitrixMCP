@@ -62,10 +62,18 @@ Full run: `node scripts/test-all.mjs` → 10 passed, 0 failed, 2 skipped.
       auto-falls back to raw (no corruption) — verified live on APPSWN13P
 - [x] Disk streaming both sides (no whole-file in memory) — safe for multi-GB
 - [x] `compress` tool option; hash-verify recipe documented
-- [x] Mirrored in BOTH helpers (rdt-agent.ps1, rdt_agent.py); Python fully
-      tested offline, TS relay tested offline, PS mirrors the Python logic
-- [ ] ACTION: user reloads the helper to enable compression/streaming (old
-      helper still works uncompressed via negotiation)
+- [x] Mirrored in BOTH helpers (rdt-agent.ps1, rdt_agent.py); both validated
+- [x] Gzip round-trip verified LIVE on the reloaded helper (72 KB -> 20 KB wire,
+      byte-identical) — the new PowerShell helper's gzip path works on the box
+
+## Versioning (done)
+- [x] Single source of truth `APP_VERSION` (0.2.0) in src/config.ts + package.json
+- [x] MCP server reports v0.2.0 (McpServer version + startup stderr log)
+- [x] Helpers carry a version, print it in the banner, expose `--version` /
+      `-Version`, and advertise `agentVersion` in ping
+- [x] `rdt_ping` surfaces server version + protocol + helper version + gzip
+- [ ] ACTION: reload the helper once more to report v0.2.0 (it now shows
+      "pre-0.2" — harmless; gzip already works)
 
 ## Nice-to-have / later
 - [ ] Resume/checkpoint a transfer interrupted mid-stream (by byte offset)

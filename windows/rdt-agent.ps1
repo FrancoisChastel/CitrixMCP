@@ -54,14 +54,21 @@ param(
   [int]$ResendMs = 1500,
   [switch]$DryRun,
   [string]$DenyRegex = '',
-  [switch]$Quiet
+  [switch]$Quiet,
+  [switch]$Version
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+$RDT_VERSION = '0.2.0'
 $FRAME_PREFIX = 'RDT1|'
 $PROTO_V = 1
+
+if ($Version) {
+  Write-Host "rdt-agent.ps1 version $RDT_VERSION (protocol v$PROTO_V)"
+  exit 0
+}
 
 # --- session state -----------------------------------------------------------
 $script:CurrentSid = $null
@@ -202,9 +209,10 @@ function Process-Frame($frame) {
         version    = $PROTO_V
         host       = $env:COMPUTERNAME
         user       = $env:USERNAME
-        pid        = $PID
-        powershell = $PSVersionTable.PSVersion.ToString()
-        gzip       = $true
+        pid          = $PID
+        powershell   = $PSVersionTable.PSVersion.ToString()
+        agentVersion = $RDT_VERSION
+        gzip         = $true
       }
       return New-Reply -n ($frame.n + 1) -op 'ping' -fin $true -data $data
     }
@@ -330,7 +338,7 @@ $script:ExecRunspace.ThreadOptions = 'ReuseThread'
 $script:ExecRunspace.Open()
 
 Write-Host ""
-Write-Host "  Remote Desktop Terminal helper" -ForegroundColor Cyan
+Write-Host "  Remote Desktop Terminal helper  v$RDT_VERSION  (protocol v$PROTO_V)" -ForegroundColor Cyan
 Write-Host "  host=$env:COMPUTERNAME user=$env:USERNAME pid=$PID ps=$($PSVersionTable.PSVersion)" -ForegroundColor Gray
 Write-Host "  Watching clipboard. Every command is printed before it runs." -ForegroundColor Gray
 if ($DryRun) { Write-Host "  DRY RUN: commands are shown but NOT executed." -ForegroundColor Yellow }

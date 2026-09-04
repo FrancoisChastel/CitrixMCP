@@ -8,7 +8,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { MacClipboard } from "./clipboard.js";
-import { config } from "./config.js";
+import { APP_VERSION, config } from "./config.js";
 import { Relay } from "./relay.js";
 import { registerTools } from "./tools.js";
 import { log } from "./util.js";
@@ -19,7 +19,7 @@ async function main(): Promise<void> {
 
   const server = new McpServer({
     name: "remote-desktop-terminal",
-    version: "0.1.0",
+    version: APP_VERSION,
   });
 
   registerTools(server, relay);
@@ -27,7 +27,7 @@ async function main(): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
 
-  log("info", `MCP server ready (session ${relay.sessionId})`);
+  log("info", `CitrixMCP v${APP_VERSION} ready (session ${relay.sessionId})`);
   log(
     "info",
     `clipboard transport · poll ${config.pollIntervalMs}ms · chunk ${config.chunkBytes}B`,

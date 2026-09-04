@@ -49,6 +49,7 @@ import time
 import zlib
 from ctypes import wintypes
 
+AGENT_VERSION = "0.2.0"
 FRAME_PREFIX = "RDT1|"
 PROTO_V = 1
 
@@ -392,6 +393,7 @@ class Agent:
                 "user": _envs("USERNAME"),
                 "pid": _os_pid(),
                 "powershell": "python-agent",
+                "agentVersion": AGENT_VERSION,
                 "gzip": True,
             }
             return make_reply(self.sid, n + 1, "ping", data=info, fin=True)
@@ -547,6 +549,8 @@ def main():
     p.add_argument("--dry-run", action="store_true", help="print commands but do not run them")
     p.add_argument("--deny-regex", default="", help="refuse commands matching this regex")
     p.add_argument("--quiet", action="store_true")
+    p.add_argument("--version", action="version",
+                   version="rdt_agent.py %s (protocol v%d)" % (AGENT_VERSION, PROTO_V))
     args = p.parse_args()
 
     if sys.platform != "win32":
@@ -555,7 +559,7 @@ def main():
 
     agent = Agent(args)
     print("")
-    print("  Remote Desktop Terminal helper (Python)")
+    print("  Remote Desktop Terminal helper (Python)  v%s  (protocol v%d)" % (AGENT_VERSION, PROTO_V))
     print("  host=%s user=%s pid=%s" % (_envs("COMPUTERNAME"), _envs("USERNAME"), _os_pid()))
     print("  Watching clipboard. Every command is printed before it runs.")
     if args.dry_run:

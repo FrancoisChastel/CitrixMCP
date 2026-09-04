@@ -16,6 +16,10 @@ const bool = (name: string, fallback: boolean): boolean => {
   return /^(1|true|yes|on)$/i.test(raw.trim());
 };
 
+/** Human-facing tool version. Keep in sync with package.json and the helpers. */
+export const APP_VERSION = "0.2.0";
+
+/** Wire-protocol version. Bump only on a breaking frame-format change. */
 export const PROTOCOL_VERSION = 1;
 
 /**

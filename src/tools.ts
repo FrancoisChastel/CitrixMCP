@@ -10,7 +10,7 @@ import { basename, resolve } from "node:path";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Relay, ExecResult } from "./relay.js";
-import { config } from "./config.js";
+import { APP_VERSION, PROTOCOL_VERSION, config } from "./config.js";
 import {
   buildFocus,
   buildLaunch,
@@ -62,7 +62,7 @@ export function registerTools(server: McpServer, relay: Relay): void {
     {
       title: "Ping remote helper",
       description:
-        "Check that the Windows PowerShell helper is running and the clipboard link is alive. Returns the remote host, user, and PowerShell version. Run this first.",
+        "Check that the Windows helper is running and the clipboard link is alive. Returns server/helper versions, host, user, PowerShell version, and gzip support. Run this first.",
       inputSchema: {},
     },
     async () =>
@@ -70,6 +70,8 @@ export function registerTools(server: McpServer, relay: Relay): void {
         const info = await relay.ping();
         return text(
           `Helper is alive.\n` +
+            `server: CitrixMCP v${APP_VERSION} (protocol v${PROTOCOL_VERSION})\n` +
+            `helper: v${info.agentVersion ?? "pre-0.2"}${info.gzip ? " (gzip)" : ""}\n` +
             `host: ${info.host}\nuser: ${info.user}\npid: ${info.pid}\n` +
             `powershell: ${info.powershell}\nprotocol: v${info.version}`,
         );

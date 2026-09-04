@@ -133,6 +133,11 @@ Leave the helper running. Stop it anytime with **Ctrl+C**.
 Ask Claude to `rdt_ping` (confirms the round-trip), then `rdt_run` a command.
 That’s it. 🎉
 
+`rdt_ping` reports the server version, protocol version, and the helper's
+version + gzip support, so you can confirm both ends match. The helpers also
+print their version in the startup banner and support `--version` (Python) /
+`-Version` (PowerShell).
+
 ## Tools
 
 | Tool | What it does |

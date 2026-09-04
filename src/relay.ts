@@ -37,6 +37,8 @@ export interface PingInfo {
   user: string;
   pid: number;
   powershell: string;
+  /** Helper's own version string (absent on pre-0.2 helpers). */
+  agentVersion?: string;
   /** New helpers advertise gzip support so the server never sends compressed
    * bytes to an old helper that would write them without decompressing. */
   gzip?: boolean;
